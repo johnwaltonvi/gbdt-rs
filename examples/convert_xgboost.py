@@ -22,7 +22,7 @@ def convert(input_model, objective, output_file):
             model_format = b"".join(model_format)
             if model_format == b"bs64":
                 print("This model type is not supported")
-            elif model_format != "binf":
+            elif model_format != b"binf":
                 f.seek(0)
             base_score = struct.unpack('f',f.read(4))[0]
     except Exception as e:
