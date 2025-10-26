@@ -92,14 +92,10 @@
 //! // [2.0, 0.75, 0.75, 3.0]
 //! ```
 
-#[cfg(all(feature = "mesalock_sgx", not(target_env = "sgx")))]
-use std::prelude::v1::*;
-
 use crate::binary_tree::BinaryTree;
 use crate::binary_tree::BinaryTreeNode;
 use crate::binary_tree::TreeIndex;
 use crate::config::Loss;
-use crate::errors::{GbdtError, Result};
 #[cfg(feature = "enable_training")]
 use crate::fitness::almost_equal;
 
@@ -1732,115 +1728,6 @@ impl DecisionTree {
     /// ```
     pub fn print(&self) {
         self.tree.print();
-    }
-
-    /// Build a decision tree from xgboost's model. xgboost can dump the model in JSON format. We used serde_json to parse a JSON string.  
-    /// # Example
-    /// ``` rust
-    /// use serde_json::{Result, Value};
-    /// use gbdt::decision_tree::DecisionTree;
-    /// let data = r#"
-    ///       { "nodeid": 0, "depth": 0, "split": 0, "split_condition": 750, "yes": 1, "no": 2, "missing": 2, "children": [
-    ///          { "nodeid": 1, "leaf": 25.7333336 },
-    ///          { "nodeid": 2, "leaf": 15.791667 }]}"#;
-    /// let node: Value = serde_json::from_str(data).unwrap();
-    /// let dt = DecisionTree::get_from_xgboost(&node);
-    /// ```
-    pub fn get_from_xgboost(node: &serde_json::Value) -> Result<Self> {
-        // Parameters are not used in prediction process, so we use default parameters.
-        let mut tree = DecisionTree::new();
-        let index = tree.tree.add_root(BinaryTreeNode::new(DTNode::new()));
-        tree.add_node_from_json(index, node)?;
-        Ok(tree)
-    }
-
-    /// Recursively build the tree node from the JSON value.
-    fn add_node_from_json(&mut self, index: TreeIndex, node: &serde_json::Value) -> Result<()> {
-        {
-            let node_ref = self
-                .tree
-                .get_node_mut(index)
-                .expect("node should not be empty!");
-            // This is the leaf node
-            if let serde_json::Value::Number(pred) = &node["leaf"] {
-                let leaf_value = pred.as_f64().ok_or("parse 'leaf' error")?;
-                node_ref.value.pred = leaf_value as ValueType;
-                node_ref.value.is_leaf = true;
-                return Ok(());
-            } else {
-                // feature value
-                let feature_value = node["split_condition"]
-                    .as_f64()
-                    .ok_or("parse 'split condition' error")?;
-                node_ref.value.feature_value = feature_value as ValueType;
-
-                // feature index
-                let feature_index = match node["split"].as_i64() {
-                    Some(v) => v,
-                    None => {
-                        let feature_name = node["split"]
-                            .as_str()
-                            .ok_or("parse 'split' error")?;
-                        let digits = feature_name
-                        .rsplit_once(|c: char| !c.is_ascii_digit())
-                        .map_or(feature_name, |(_head, digits)| digits);
-                        digits.parse::<i64>()?
-                    }
-                };
-                node_ref.value.feature_index = feature_index as usize;
-
-                // handle unknown feature
-                let missing = node["missing"]
-                    .as_i64()
-                    .ok_or("parse 'missing' error")?;
-                let left_child = node["yes"].as_i64().ok_or("parse 'yes' error")?;
-                let right_child = node["no"].as_i64().ok_or("parse 'no' error")?;
-                if missing == left_child {
-                    node_ref.value.missing = -1;
-                } else if missing == right_child {
-                    node_ref.value.missing = 1;
-                } else {
-                    return Err(GbdtError::NotSupportExtraMissingNode);
-                }
-            }
-        }
-
-        // ids for children
-        let left_child = node["yes"].as_i64().ok_or("parse 'yes' error")?;
-        let right_child = node["no"].as_i64().ok_or("parse 'no' error")?;
-        let children = node["children"]
-            .as_array()
-            .ok_or("parse 'children' error")?;
-        let mut find_left = false;
-        let mut find_right = false;
-        for child in children.iter() {
-            let node_id = child["nodeid"]
-                .as_i64()
-                .ok_or("parse 'nodeid' error")?;
-
-            // build left child
-            if node_id == left_child {
-                find_left = true;
-                let left_index = self
-                    .tree
-                    .add_left_node(index, BinaryTreeNode::new(DTNode::new()));
-                self.add_node_from_json(left_index, child)?;
-            }
-
-            // build right child
-            if node_id == right_child {
-                find_right = true;
-                let right_index = self
-                    .tree
-                    .add_right_node(index, BinaryTreeNode::new(DTNode::new()));
-                self.add_node_from_json(right_index, child)?;
-            }
-        }
-
-        if (!find_left) || (!find_right) {
-            return Err(GbdtError::ChildrenNotFound);
-        }
-        Ok(())
     }
 
     /// For debug use. Return the number of nodes in current decision tree

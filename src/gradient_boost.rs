@@ -81,30 +81,17 @@
 //! // [1.0, 1.0, 2.0, 0.0]
 //! ```
 
-#[cfg(all(feature = "mesalock_sgx", not(target_env = "sgx")))]
-use std::prelude::v1::*;
-
 use crate::config::{Config, Loss};
 use crate::decision_tree::DecisionTree;
 #[cfg(feature = "enable_training")]
 use crate::decision_tree::TrainingCache;
 use crate::decision_tree::{DataVec, PredVec, ValueType, VALUE_TYPE_MIN, VALUE_TYPE_UNKNOWN};
-use crate::errors::Result;
 #[cfg(feature = "enable_training")]
 use crate::fitness::{label_average, logit_loss_gradient, weighted_label_median, AUC, MAE, RMSE};
 #[cfg(feature = "enable_training")]
 use rand::prelude::SliceRandom;
 #[cfg(feature = "enable_training")]
 use rand::thread_rng;
-
-#[cfg(not(feature = "mesalock_sgx"))]
-use std::fs::File;
-
-#[cfg(feature = "mesalock_sgx")]
-use std::untrusted::fs::File;
-
-use std::io::prelude::*;
-use std::io::BufReader;
 
 use serde_derive::{Deserialize, Serialize};
 
@@ -487,16 +474,31 @@ impl GBDT {
     /// # Example
     ///
     /// ```rust
+    /// use gbdt::config::Config;
+    /// use gbdt::decision_tree::{Data, DataVec};
     /// use gbdt::gradient_boost::GBDT;
-    /// use gbdt::input::{load, InputFormat};
-    /// use gbdt::decision_tree::DataVec;
-    /// let gbdt =
-    ///     GBDT::from_xgboost_dump("xgb-data/xgb_multi_softmax/gbdt.model", "multi:softmax").unwrap();
-    /// let test_file = "xgb-data/xgb_multi_softmax/dermatology.data.test";
-    /// let mut fmt = InputFormat::csv_format();
-    /// fmt.set_label_index(34);
-    /// let test_data: DataVec = load(test_file, fmt).unwrap();
-    /// let (labels, probs) = gbdt.predict_multiclass(&test_data, 6);
+    ///
+    /// let mut cfg = Config::new();
+    /// cfg.set_feature_size(2);
+    /// cfg.set_iterations(4);
+    /// cfg.set_loss("multi:softmax");
+    ///
+    /// let mut training: DataVec = vec![
+    ///     Data::new_training_data(vec![1.0, 0.5], 0.0, 1.0, None),
+    ///     Data::new_training_data(vec![0.2, 0.3], 1.0, 1.0, None),
+    ///     Data::new_training_data(vec![0.6, 0.7], 2.0, 1.0, None),
+    ///     Data::new_training_data(vec![0.4, 0.8], 2.0, 1.0, None),
+    /// ];
+    /// let test: DataVec = vec![
+    ///     Data::new_test_data(vec![0.5, 0.5], None),
+    ///     Data::new_test_data(vec![0.1, 0.2], None),
+    /// ];
+    ///
+    /// let mut gbdt = GBDT::new(&cfg);
+    /// gbdt.fit(&mut training);
+    /// let (labels, probs) = gbdt.predict_multiclass(&test, 3);
+    /// assert_eq!(labels.len(), test.len());
+    /// assert_eq!(probs.len(), test.len());
     /// ```
     pub fn predict_multiclass(
         &self,
@@ -650,155 +652,4 @@ impl GBDT {
         }
     }
 
-    /// Save the model to a file using serde.
-    ///
-    /// # Example
-    /// ```rust
-    /// use gbdt::config::Config;
-    /// use gbdt::gradient_boost::GBDT;
-    /// use gbdt::decision_tree::{Data, DataVec, PredVec, ValueType};
-    ///
-    /// // set config for algorithm
-    /// let mut cfg = Config::new();
-    /// cfg.set_feature_size(3);
-    /// cfg.set_max_depth(2);
-    /// cfg.set_min_leaf_size(1);
-    /// cfg.set_loss("SquaredError");
-    /// cfg.set_iterations(2);
-    ///
-    /// // initialize GBDT algorithm
-    /// let mut gbdt = GBDT::new(&cfg);
-    ///
-    /// // setup training data
-    /// let data1 = Data::new_training_data (
-    ///     vec![1.0, 2.0, 3.0],
-    ///     1.0,
-    ///     1.0,
-    ///     None
-    /// );
-    /// let data2 = Data::new_training_data (
-    ///     vec![1.1, 2.1, 3.1],
-    ///     1.0,
-    ///     1.0,
-    ///     None
-    /// );
-    /// let data3 = Data::new_training_data (
-    ///     vec![2.0, 2.0, 1.0],
-    ///     1.0,
-    ///     2.0,
-    ///     None
-    /// );
-    /// let data4 = Data::new_training_data (
-    ///     vec![2.0, 2.3, 1.2],
-    ///     1.0,
-    ///     0.0,
-    ///     None
-    /// );
-    ///
-    /// let mut dv: DataVec = Vec::new();
-    /// dv.push(data1.clone());
-    /// dv.push(data2.clone());
-    /// dv.push(data3.clone());
-    /// dv.push(data4.clone());
-    ///
-    /// // train the decision trees.
-    /// gbdt.fit(&mut dv);
-    ///
-    /// // Save model.
-    /// // gbdt.save_model("gbdt.model");
-    /// ```
-    pub fn save_model(&self, filename: &str) -> Result<()> {
-        let mut file = File::create(filename)?;
-        let serialized = serde_json::to_string(self)?;
-        file.write_all(serialized.as_bytes())?;
-
-        Ok(())
-    }
-
-    /// Load the model from the file.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use gbdt::gradient_boost::GBDT;
-    /// //let gbdt = GBDT::load_model("./gbdt-rs.model").unwrap();
-    /// ```
-    ///
-    /// # Error
-    /// Error when get exception during model file parsing or deserialize.
-    pub fn load_model(filename: &str) -> Result<Self> {
-        let mut file = File::open(filename)?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-        let ret: Self = serde_json::from_str(&contents)?;
-        Ok(ret)
-    }
-
-    /// Load the model from xgboost's model using a path. The xgboost's model should be converted by "convert_xgboost.py"
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use gbdt::gradient_boost::GBDT;
-    /// let gbdt =
-    ///     GBDT::from_xgboost_dump("xgb-data/xgb_binary_logistic/gbdt.model", "binary:logistic").unwrap();
-    /// ```
-    ///
-    /// # Error
-    /// Error when get exception during model file parsing.
-    pub fn from_xgboost_dump(model_file: &str, objective: &str) -> Result<Self> {
-        let tree_file = File::open(model_file)?;
-        let reader = BufReader::new(tree_file);
-        Self::from_xgboost_reader(reader, objective)
-    }
-
-    /// Load the model from xgboost's model using a reader. The xgboost's model should be converted by "convert_xgboost.py"
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use gbdt::gradient_boost::GBDT;
-    /// let gbdt =
-    ///     GBDT::from_xgboost_reader(std::io::Cursor::new(include_str!("../xgb-data/xgb_binary_logistic/gbdt.model")), "binary:logistic").unwrap();
-    /// ```
-    ///
-    /// # Error
-    /// Error when get exception during model parsing.
-    pub fn from_xgboost_reader<R>(reader: R, objective: &str) -> Result<Self>
-    where
-        R: std::io::BufRead,
-    {
-        let mut all_lines: Vec<String> = Vec::new();
-        let mut has_read_score = false;
-        let mut base_score: ValueType = 0.0;
-        for line in reader.lines() {
-            // read base score
-            if !has_read_score {
-                has_read_score = true;
-                base_score = line?.parse::<ValueType>()?;
-                continue;
-            }
-            // read trees
-            let value: String = line?;
-            all_lines.push(value);
-        }
-        let single_line = all_lines.join("");
-        let json_obj: serde_json::Value = serde_json::from_str(&single_line)?;
-
-        let nodes = json_obj.as_array().ok_or("parse trees error")?;
-
-        let mut cfg = Config::new();
-        cfg.set_loss(objective);
-        cfg.set_iterations(nodes.len());
-        cfg.shrinkage = 1.0;
-        let mut gbdt = GBDT::new(&cfg);
-        gbdt.bias = base_score;
-
-        // load trees
-        for node in nodes.iter() {
-            let tree = DecisionTree::get_from_xgboost(node)?;
-            gbdt.trees.push(tree);
-        }
-        Ok(gbdt)
-    }
 }
